@@ -1,0 +1,310 @@
+openapi: 3.0.3
+info:
+  title: Network Dashboard API
+  description: >-
+    REST API for the Network Dashboard — a real-time
+    Organization → Network (NodeGroup) → Device (Node) → Ports & Usage
+    monitoring platform. Live status and usage updates are delivered separately
+    over Action Cable (`/cable`, `DeviceChannel`) and are not part of this REST spec.
+  version: 1.0.0
+servers:
+  - url: http://localhost:3000
+    description: Local development
+
+tags:
+  - name: Organizations
+  - name: Networks
+  - name: Devices
+  - name: Usage
+  - name: System
+
+paths:
+  /api/organizations/{id}:
+    get:
+      tags: [Organizations]
+      summary: Get an organization with its networks and computed health
+      operationId: showOrganization
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: Organization with networks and per-network device health.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/networks/{id}/devices:
+    get:
+      tags: [Networks]
+      summary: List devices in a network
+      description: Returns the network (NodeGroup) along with its member devices.
+      operationId: networkDevices
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: Network with its devices.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkDevices'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/nodes/{id}:
+    get:
+      tags: [Devices]
+      summary: Get device detail with port summary
+      description: >-
+        Returns device detail, a port summary, and the port list. As a side
+        effect, enqueues an immediate `PollDeviceUsageJob` for this device so a
+        fresh usage sample is broadcast shortly after.
+      operationId: showNode
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: Device detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/nodes/{node_id}/device_usages:
+    get:
+      tags: [Usage]
+      summary: Get time-bounded usage samples for a device
+      description: >-
+        Returns usage rows within a time window, ordered most-recent first and
+        capped at 5000 rows. Defaults to the last 24 hours when `from`/`to` are
+        omitted. Used to seed the usage chart.
+      operationId: deviceUsages
+      parameters:
+        - name: node_id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Device (Node) id.
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: >-
+            Window start (inclusive). Any value parseable by the server's time
+            zone. Defaults to 24 hours ago. Unparseable values are ignored.
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Window end (inclusive). Defaults to now.
+      responses:
+        '200':
+          description: Usage samples within the window (max 5000, newest first).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DeviceUsage'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/health:
+    get:
+      tags: [System]
+      summary: Health probe
+      operationId: health
+      responses:
+        '200':
+          description: Service is healthy.
+
+  /api/internal_component:
+    get:
+      tags: [System]
+      summary: Demo internal-component metrics
+      operationId: internalComponent
+      responses:
+        '200':
+          description: Demo metrics payload.
+
+components:
+  parameters:
+    IdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+
+  responses:
+    NotFound:
+      description: Record not found.
+
+  schemas:
+    Organization:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        address:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        license:
+          type: string
+          nullable: true
+        networks:
+          type: array
+          items:
+            $ref: '#/components/schemas/NetworkSummary'
+
+    NetworkSummary:
+      type: object
+      description: A network (NodeGroup) with health derived from its devices at query time.
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        status:
+          type: string
+          nullable: true
+        device_count:
+          type: integer
+        type:
+          type: string
+          description: STI type, e.g. RouterGroup or SwitchGroup.
+          nullable: true
+        device_health:
+          type: string
+          enum: [all_online, all_offline, partial_offline, unknown]
+        online_devices:
+          type: integer
+        offline_devices:
+          type: integer
+        unknown_devices:
+          type: integer
+
+    NetworkDevices:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        status:
+          type: string
+          nullable: true
+        devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeviceSummary'
+
+    DeviceSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        type:
+          type: string
+          description: STI type, e.g. Router or Switch.
+          nullable: true
+        status:
+          type: string
+          nullable: true
+        ip:
+          type: string
+          nullable: true
+        mac:
+          type: string
+          nullable: true
+
+    DeviceDetail:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        type:
+          type: string
+          nullable: true
+        status:
+          type: string
+          nullable: true
+        ip:
+          type: string
+          nullable: true
+        mac:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        license:
+          type: string
+          nullable: true
+        network:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+        usage:
+          type: object
+          description: Port summary counts.
+          properties:
+            total_ports:
+              type: integer
+            connected_ports:
+              type: integer
+            disconnected_ports:
+              type: integer
+        ports:
+          type: array
+          items:
+            $ref: '#/components/schemas/Port'
+
+    Port:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          description: Interface name, e.g. WAN1.
+        status:
+          type: string
+          description: e.g. "connected".
+
+    DeviceUsage:
+      type: object
+      properties:
+        id:
+          type: integer
+        uplink:
+          type: integer
+          description: Uplink index; surfaced in the UI as WAN 1 / WAN 2.
+        bytes:
+          type: integer
+          format: int64
+        recorded_at:
+          type: string
+          format: date-time
