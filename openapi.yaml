@@ -4,9 +4,13 @@ info:
   description: >-
     REST API for the Network Dashboard — a real-time
     Organization → Network (NodeGroup) → Device (Node) → Ports & Usage
-    monitoring platform. Live status and usage updates are delivered separately
-    over Action Cable (`/cable`, `DeviceChannel`) and are not part of this REST spec.
-  version: 1.0.0
+    monitoring platform.
+
+    Networks and devices support server-side **name search** (`q`) and
+    **pagination** (`page` / `per_page`). Live status and usage updates are
+    delivered separately over Action Cable (`/cable`, `DeviceChannel`) — see the
+    `x-websocket` section below; those messages are not part of the REST spec.
+  version: 1.1.0
 servers:
   - url: http://localhost:3000
     description: Local development
@@ -22,13 +26,21 @@ paths:
   /api/organizations/{id}:
     get:
       tags: [Organizations]
-      summary: Get an organization with its networks and computed health
+      summary: Get an organization with a searched, paginated page of networks
+      description: >-
+        Returns the organization plus one page of its networks, each with
+        query-time device health computed in SQL. Supports name search and
+        pagination via `q`, `page`, and `per_page`. This is also the endpoint the
+        server-rendered shell embeds (page 1, no query) for first paint.
       operationId: showOrganization
       parameters:
         - $ref: '#/components/parameters/IdParam'
+        - $ref: '#/components/parameters/QueryParam'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
       responses:
         '200':
-          description: Organization with networks and per-network device health.
+          description: Organization with a page of networks and pagination metadata.
           content:
             application/json:
               schema:
@@ -39,14 +51,19 @@ paths:
   /api/networks/{id}/devices:
     get:
       tags: [Networks]
-      summary: List devices in a network
-      description: Returns the network (NodeGroup) along with its member devices.
+      summary: List devices in a network (searchable, paginated)
+      description: >-
+        Returns the network (NodeGroup) plus one page of its member devices.
+        Supports name search and pagination via `q`, `page`, and `per_page`.
       operationId: networkDevices
       parameters:
         - $ref: '#/components/parameters/IdParam'
+        - $ref: '#/components/parameters/QueryParam'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
       responses:
         '200':
-          description: Network with its devices.
+          description: Network with a page of devices and pagination metadata.
           content:
             application/json:
               schema:
@@ -82,7 +99,8 @@ paths:
       description: >-
         Returns usage rows within a time window, ordered most-recent first and
         capped at 5000 rows. Defaults to the last 24 hours when `from`/`to` are
-        omitted. Used to seed the usage chart.
+        omitted. Used to seed the usage chart; live points then arrive over the
+        WebSocket.
       operationId: deviceUsages
       parameters:
         - name: node_id
@@ -137,6 +155,25 @@ paths:
         '200':
           description: Demo metrics payload.
 
+# Informational: real-time channel is not REST, documented here for completeness.
+x-websocket:
+  endpoint: /cable
+  channel: DeviceChannel
+  subscribe:
+    identifier: '{ "channel": "DeviceChannel", "node_id": <id> }'
+    note: Unknown node ids are rejected.
+  messages:
+    - type: usage
+      description: >-
+        One batched frame per poll carrying every newly-inserted usage point.
+      example:
+        type: usage
+        usages:
+          - { id: 1, uplink: 1, bytes: 2969, recorded_at: '2026-07-01T10:20:51Z' }
+          - { id: 2, uplink: 2, bytes: 833, recorded_at: '2026-07-01T10:20:51Z' }
+    - type: node
+      description: Refreshed device + port snapshot after a poll updates status.
+
 components:
   parameters:
     IdParam:
@@ -145,12 +182,51 @@ components:
       required: true
       schema:
         type: integer
+    QueryParam:
+      name: q
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Case-insensitive name search (ILIKE). Omitted/blank returns all.
+    PageParam:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+      description: 1-based page number. Values below 1 are clamped to 1.
+    PerPageParam:
+      name: per_page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 12
+      description: Page size. Defaults to 12, clamped to a maximum of 100.
 
   responses:
     NotFound:
       description: Record not found.
 
   schemas:
+    Pagination:
+      type: object
+      description: Pagination metadata for a list response.
+      properties:
+        page:
+          type: integer
+        per_page:
+          type: integer
+        total_count:
+          type: integer
+        total_pages:
+          type: integer
+
     Organization:
       type: object
       properties:
@@ -169,8 +245,11 @@ components:
           nullable: true
         networks:
           type: array
+          description: One page of networks (see networks_pagination).
           items:
             $ref: '#/components/schemas/NetworkSummary'
+        networks_pagination:
+          $ref: '#/components/schemas/Pagination'
 
     NetworkSummary:
       type: object
@@ -211,8 +290,11 @@ components:
           nullable: true
         devices:
           type: array
+          description: One page of devices (see pagination).
           items:
             $ref: '#/components/schemas/DeviceSummary'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
 
     DeviceSummary:
       type: object
